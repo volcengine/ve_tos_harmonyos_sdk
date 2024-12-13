@@ -1,0 +1,21 @@
+{
+  "module": {
+    "name": "tos_harmonyos_sdk_test",
+    "type": "feature",
+    "deviceTypes": [
+      "default",
+      "tablet",
+      "2in1"
+    ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET",
+      },
+      {
+        "name": "ohos.permission.WRITE_MEDIA"
+      },
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false
+  }
+}

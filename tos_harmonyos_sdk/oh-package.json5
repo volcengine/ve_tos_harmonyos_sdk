@@ -1,0 +1,13 @@
+{
+  "name": "@volcengine/tos_harmonyos_sdk",
+  "version": "1.0.0",
+  "description": "TOS SDK for ArkTS",
+  "main": "Index.ets",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@ohos/axios": "^2.2.4"
+  },
+  "devDependencies": {},
+  "dynamicDependencies": {}
+}

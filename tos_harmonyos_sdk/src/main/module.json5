@@ -1,0 +1,11 @@
+{
+  "module": {
+    "name": "tos_harmonyos_sdk",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet",
+      "2in1"
+    ]
+  }
+}
