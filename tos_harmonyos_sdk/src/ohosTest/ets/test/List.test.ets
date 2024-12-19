@@ -25,6 +25,7 @@ import uploadPartCopyTest from './uploadPartCopy.test'
 import streamTest from './stream.test'
 import httpSchemeTest from './httpScheme.test'
 import encodeTest from './encode.test'
+import parts2Test from './parts2.test'
 
 export default function testsuite() {
   bucketTest()
@@ -49,4 +50,5 @@ export default function testsuite() {
   streamTest();
   httpSchemeTest();
   encodeTest();
+  parts2Test();
 }

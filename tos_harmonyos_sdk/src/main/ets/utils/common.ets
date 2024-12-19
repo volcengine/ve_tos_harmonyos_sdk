@@ -363,3 +363,26 @@ export const schemeHost = (endpoint: string): SchemeHost => {
     host,
   }
 }
+
+export const normalizeHeadersKey = (
+  headers: Headers | undefined
+): Headers => {
+  if (!headers) {
+    return {};
+  }
+  const headers1: Headers = headers;
+  const headers2: Headers = {};
+  Object.keys(headers1).forEach((key: string) => {
+    if (headers1[key] != null) {
+      headers2[key] = headers1[key];
+    }
+  });
+
+  const headers3: Headers = {};
+  Object.keys(headers2).forEach((key: string) => {
+    const newKey = key.toLowerCase();
+    headers3[newKey] = headers2[key];
+  });
+
+  return headers3;
+};
