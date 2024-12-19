@@ -288,19 +288,37 @@ export default function putObjectTest2() {
       }
     })
     it('test-custom-header', 0, async () => {
-      const key = 'test-custom-header'
-      await client.putObject({
-        Key: key,
-        Bucket: bucketName,
-        RequestHeader: {
-          'x-tos-storage-class': StorageClassType.StorageClassIa
-        }
-      })
-      const res = await client.headObject({
-        Key: key,
-        Bucket: bucketName,
-      })
-      expect(res.StorageClass).assertEqual(StorageClassType.StorageClassIa);
+      {
+        const key = 'test-custom-header'
+        await client.putObject({
+          Key: key,
+          Bucket: bucketName,
+          RequestHeader: {
+            'x-tos-storage-class': StorageClassType.StorageClassIa
+          }
+        })
+        const res = await client.headObject({
+          Key: key,
+          Bucket: bucketName,
+        })
+        expect(res.StorageClass).assertEqual(StorageClassType.StorageClassIa);
+      }
+
+      {
+        const key2 = 'test-custom-header2'
+        await client.putObject({
+          Key: key2,
+          Bucket: bucketName,
+          RequestHeader: {
+            'X-Tos-Storage-Class': StorageClassType.StorageClassArchiveFr
+          }
+        })
+        const res2 = await client.headObject({
+          Key: key2,
+          Bucket: bucketName,
+        })
+        expect(res2.StorageClass).assertEqual(StorageClassType.StorageClassArchiveFr);
+      }
     })
   })
 }

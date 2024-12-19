@@ -111,7 +111,8 @@ import {
   makeGetObjectHeaders,
   withGetObjectOutput,
   schemeHost,
-  encodeContentDisposition
+  encodeContentDisposition,
+  normalizeHeadersKey
 } from './utils/common'
 import { AzRedundancyType, StorageClassType, VersioningStatusType } from './types/enum';
 import { ISigV4Credentials, SignersV4 } from './signatureV4';
@@ -156,7 +157,7 @@ export class TosClient extends TOSBase {
       );
     }
 
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'x-tos-acl', input.ACL);
     writeHeaders(headers, 'x-tos-storage-class', input.StorageClass);
     writeHeaders(headers, 'x-tos-az-redundancy', input.AzRedundancy);
@@ -297,7 +298,7 @@ export class TosClient extends TOSBase {
     return out;
   }
   putObject = async (input: PutObjectInput) => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'content-length', input.ContentLength);
     writeHeaders(headers, 'x-tos-callback', input.Callback);
     writeHeaders(headers, 'x-tos-callback-var', input.CallbackVar);
@@ -347,7 +348,7 @@ export class TosClient extends TOSBase {
     return `/${srcBucket}/${encodeURIComponent(srcKey)}`;
   }
   copyObject = async (input: CopyObjectInput): Promise<CopyObjectOutput> => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'cache-control', input.CacheControl)
     if (input.ContentDisposition) {
       writeHeaders(headers, 'content-disposition', encodeContentDisposition(input.ContentDisposition))
@@ -449,7 +450,7 @@ export class TosClient extends TOSBase {
     return output;
   }
   setObjectMeta = async (input: SetObjectMetaInput): Promise<SetObjectMetaOutput> => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     const query: Query = { metadata: '' }
     if (input.VersionId) {
       query.versionId = input.VersionId;
@@ -472,7 +473,7 @@ export class TosClient extends TOSBase {
     return output;
   }
   appendObject = async (input: AppendObjectInput): Promise<AppendObjectOutput> => {
-    const headers: Headers = input.RequestHeader ?? {}
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {}
     writeHeaders(headers, 'content-length', input.ContentLength);
     writeHeaders(headers, 'cache-control', input.CacheControl);
     if (input.ContentDisposition){
@@ -621,7 +622,7 @@ export class TosClient extends TOSBase {
     return output;
   }
   fetchObject = async (input: FetchObjectInput): Promise<FetchObjectOutput> => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'x-tos-acl', input.ACL)
     writeHeaders(headers, 'x-tos-storage-class', input.StorageClass);
     writeHeaders(headers, 'x-tos-server-side-encryption-customer-algorithm', input.SSECAlgorithm);
@@ -662,7 +663,7 @@ export class TosClient extends TOSBase {
     return out;
   }
   putFetchTask = async (input: PutFetchTaskInput): Promise<PutFetchTaskOutput> => {
-    const headers: Headers = input.RequestHeader ?? {}
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {}
     writeHeaders(headers, 'x-tos-acl', input.ACL)
     writeHeaders(headers, 'x-tos-storage-class', input.StorageClass);
     writeHeaders(headers, 'x-tos-server-side-encryption-customer-algorithm', input.SSECAlgorithm);
@@ -955,7 +956,7 @@ export class TosClient extends TOSBase {
 
   // parts
   createMultipartUpload = async (input: CreateMultipartUploadInput): Promise<CreateMultipartUploadOutput> => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'encoding-type', input.EncodingType);
     writeHeaders(headers, 'cache-control', input.CacheControl)
     if (input.ContentDisposition){
@@ -1006,7 +1007,7 @@ export class TosClient extends TOSBase {
     return output;
   }
   uploadPart = async (input: UploadPartInput): Promise<UploadPartOutput> => {
-    const headers: Headers = input.RequestHeader ?? {};
+    const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     if (input.ContentMD5) {
       headers['content-md5'] = input.ContentMD5;
     }
@@ -1031,7 +1032,7 @@ export class TosClient extends TOSBase {
     return output
   }
   uploadPartCopy = async (input: UploadPartCopyInput): Promise<UploadPartCopyOutput> => {
-    const headers = input.RequestHeader ?? {};
+    const headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     const query: Query = {}
     query.partNumber = input.PartNumber;
     query.uploadId = input.UploadID;

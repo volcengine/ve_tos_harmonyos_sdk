@@ -7,7 +7,7 @@ ohpm i @volcengine/tos_harmonyos_sdk
 ```
 ## Usage
 ``` typescript
-import { TosClient, TosClientError, TosServerError } from 'tos_harmonyos_sdk';
+import { TosClient, TosClientError, TosServerError } from '@volcengine/tos_harmonyos_sdk';
 
 // 创建客户端
 const client = new TosClient({
