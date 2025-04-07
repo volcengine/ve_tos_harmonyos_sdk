@@ -6,11 +6,14 @@
 import { ACLType, AzRedundancyType,
   MetadataDirectiveType,
   RedirectType,
-  StorageClassType, VersioningStatusType } from './enum';
+  StorageClassType, VersioningStatusType, UploadEventType } from './enum';
 import { Headers } from './common';
 import { stream } from '@kit.ArkTS';
 import { InnerGetObjectBasicOutput, InnerHeadObjectOutput } from './inner';
+import { DataTransferListener } from './DataTransferListener'
 import { rcp } from '@kit.RemoteCommunicationKit';
+import { CancelHook } from '../cancel';
+
 export interface GenericInput {
   RequestHeader?: Record<string, string>,
   //RequestQuery?: Record<string, string | number>,
@@ -259,7 +262,7 @@ export interface PutObjectBasicInput extends GenericInput {
   CallbackVar?: string;
 }
 
-export type SupportObjectBody = ArrayBuffer | rcp.UploadFromStream
+export type SupportObjectBody = ArrayBuffer | rcp.UploadFromStream | rcp.UploadFromFile
 
 export interface PutObjectInput extends PutObjectBasicInput {
   Content?: SupportObjectBody
@@ -278,6 +281,42 @@ export interface PutObjectFromFileOutput extends RequestInfo {
   CallbackResult?: string;
   HashCrc64ecma?: string;
 }
+
+export interface UploadPartInfo {
+  PartNumber: number
+  PartSize: number
+  Offset: number
+  ETag: string
+  HashCrc64ecma: string
+}
+
+export interface UploadEvent {
+  Type: UploadEventType
+  Err?: Error;
+  Bucket: string;
+  Key: string;
+  UploadID: string;
+  FilePath: string;
+  CheckpointFile?: string;
+  UploadPartInfo?: UploadPartInfo
+}
+
+export interface UploadEventListener {
+  EventChange: (event: UploadEvent) => void;
+}
+
+export interface UploadFileInput extends CreateMultipartUploadInput {
+  FilePath: string;
+  PartSize?: number;
+  TaskNum?: number;
+  EnableCheckpoint?: boolean;
+  CheckpointFile?: string;
+  UploadEventListener?: UploadEventListener;
+  DataTransferListener?: DataTransferListener;
+  CancelHook?: CancelHook;
+}
+
+export interface UploadFileOutput extends CompleteMultipartUploadOutput{}
 
 export interface CopyObjectInput extends GenericInput {
   Bucket: string;
@@ -474,7 +513,6 @@ export interface GetObjectInput extends GenericInput{
 }
 
 
-
 export interface GetObjectBasicOutput extends RequestInfo, InnerGetObjectBasicOutput {}
 
 export interface GetObjectOutput extends GetObjectBasicOutput {
@@ -501,6 +539,18 @@ export interface HeadObjectInput {
 }
 
 export interface HeadObjectOutput extends RequestInfo, InnerHeadObjectOutput {}
+
+export interface DownloadFileInput extends HeadObjectInput {
+  FilePath: string;
+  PartSize?: number;
+  TaskNum?: number;
+  EnableCheckpoint?: boolean;
+  CheckpointFile?: string;
+  DataTransferListener?: DataTransferListener;
+  CancelHook?: CancelHook;
+}
+
+export interface DownloadFileOutput extends HeadObjectOutput {}
 
 export interface DeleteObjectInput {
   Bucket: string;
@@ -775,7 +825,7 @@ export interface AbortMultipartUploadInput {
 
 export interface AbortMultipartUploadOutput extends RequestInfo {}
 
-export interface  UploadPartBasicInput extends GenericInput{
+export interface UploadPartBasicInput extends GenericInput{
   Bucket: string // required
   Key: string    // required
   UploadID: string  // required
@@ -784,6 +834,7 @@ export interface  UploadPartBasicInput extends GenericInput{
   SSECAlgorithm?: string // 客户自定义密钥的加密方式，可扩展，不定义为枚举，当前只支持 AES256，TOS SDK 会做强校验
   SSECKey?: string
   SSECKeyMD5?: string
+  DataTransferListener?: DataTransferListener
 }
 
 export interface UploadPartInput extends UploadPartBasicInput {

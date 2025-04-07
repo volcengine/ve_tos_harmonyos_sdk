@@ -48,3 +48,13 @@ export enum MetadataDirectiveType{
   MetadataDirectiveCopy = 'COPY',
   MetadataDirectiveReplace = 'REPLACE',
 }
+
+export enum UploadEventType {
+  CreateMultipartUploadSucceed = 'CreateMultipartUploadSucceed',
+  CreateMultipartUploadFailed = 'CreateMultipartUploadFailed',
+  UploadPartSucceed = 'UploadPartSucceed',
+  UploadPartFailed = 'UploadPartFailed',
+  UploadPartAborted = 'UploadPartAborted',
+  CompleteMultipartUploadSucceed = 'CompleteMultipartUploadSucceed',
+  CompleteMultipartUploadFailed = 'CompleteMultipartUploadFailed',
+}
