@@ -386,3 +386,17 @@ export const normalizeHeadersKey = (
 
   return headers3;
 };
+
+export const getSize = (body: SupportObjectBody, headers?: Headers): number | null =>{
+  if (body instanceof  ArrayBuffer) {
+    return body.byteLength
+  };
+  if (headers && headers['content-length']) {
+    const v = Number(headers['content-length']);
+    if (v) {
+      return v;
+    }
+  }
+
+  return null;
+}
