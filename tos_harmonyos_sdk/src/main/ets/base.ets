@@ -8,7 +8,7 @@ import { rcp } from '@kit.RemoteCommunicationKit';
 import { makeAxiosInst } from './axios';
 import { Headers, Query, Method, Response, Any } from './types/common'
 import { ISigV4Credentials, SignersV4 } from './signatureV4';
-import { getEndpoint, getSortedQueryString, schemeHost } from './utils/common';
+import { getEndpoint, getSortedQueryString, schemeHost, validateBucketName } from './utils/common';
 import { hashMd5, stringify } from './crypto';
 import { buffer, stream } from '@kit.ArkTS';
 import { TosServerErrorData } from './TosServerError';
@@ -16,6 +16,7 @@ import { TosServerError } from './TosServerError';
 import { TosClientError } from './TosClientError';
 import { Reader } from './types/model2';
 import { VERSION } from './version';
+import { http } from '@kit.NetworkKit';
 
 export interface TOSConstructorOptions {
   accessKeyId: string;
@@ -34,6 +35,9 @@ export interface FetchOpts {
   axiosOpts?: AxiosRequestConfig;
   isStreamResp?: boolean;
   isStreamReq?: boolean;
+  useCustomHttp?: boolean;
+  onProgress?: (size: number) => void
+  onDataReceive?: (incomingData: ArrayBuffer) => Promise<void | number>;
 }
 
 interface FetchObjectInput {
@@ -242,6 +246,73 @@ export class TOSBase {
       reqOpts.headers['user-agent'] = this.getUserAgent();
     }
 
+    if (opts?.onDataReceive) {
+      const session = this.createRcpSession();
+      const streamData: rcp.WriteStream = {
+        write(buffer: ArrayBuffer): Promise<void | number> {
+          return opts.onDataReceive?.(buffer) || Promise.resolve();
+        }
+      };
+
+      let downloadToStream: rcp.DownloadToStream = {
+        kind: 'stream',
+        stream: streamData
+      }
+      const url = baseURL + path + '?' + getSortedQueryString(query)
+      const request = new rcp.Request(url, method, headers);
+      request.destination = downloadToStream;
+      let response: rcp.Response;
+      try {
+        response = await session.fetch(request)
+      } catch (e) {
+        session.close();
+        throw e as Error;
+      }
+      if (response.statusCode >= 300) {
+        this.handleRcpError(baseURL + path, response, session);
+      }
+      session.close();
+      return new Response(response.statusCode, response.headers as Headers, streamData as Any)
+    }
+
+    if (opts?.useCustomHttp) {
+      return new Promise<Response>((rs, rj) => {
+        const httpRequest = http.createHttp();
+        let url = (reqOpts.baseURL || '') + (reqOpts.url || '');
+        const queryStr = getSortedQueryString(query);
+        if (queryStr) {
+          url = url + '?' + getSortedQueryString(query);
+        }
+        httpRequest.request(url, {
+          method: reqOpts.method as http.RequestMethod,
+          header: reqOpts.headers,
+          extraData: body,
+        }, (err, res) => {
+          if (!err) {
+            if (res.responseCode < 400) {
+              rs(new Response(res.responseCode, res.header as Headers, res.result as Any))
+            } else {
+              let result = res.result;
+              if (typeof res.result === 'string') {
+                try {
+                  result = JSON.parse(res.result)
+                } catch (e) {}
+              }
+              rj(new TosServerError(url, res.responseCode as number, res.header as Headers, result as object))
+            }
+          } else {
+            rj(err);
+          }
+          httpRequest.off("dataSendProgress")
+          httpRequest.destroy();
+        })
+
+
+        httpRequest.on("dataSendProgress", (data: http.DataSendProgressInfo) => {
+          opts?.onProgress?.(data.sendSize);
+        });
+      })
+    }
     try {
       const res = await this.axiosInst.request<Object, AxiosResponse<Object, Object>, null>({
         method: reqOpts.method,
@@ -280,6 +351,8 @@ export class TOSBase {
       throw Error('Must provide bucket param');
     }
 
+    validateBucketName(bucket)
+
     const newOpts: FetchOpts = opts ? opts : {};
     newOpts.subdomainBucket = bucket;
 
@@ -299,6 +372,8 @@ export class TOSBase {
     if (!bucket) {
       throw new TosClientError('Must provide bucket param');
     }
+
+    validateBucketName(bucket)
 
     const newOpts: FetchOpts = opts ? opts : {};
     newOpts.subdomainBucket = bucket;

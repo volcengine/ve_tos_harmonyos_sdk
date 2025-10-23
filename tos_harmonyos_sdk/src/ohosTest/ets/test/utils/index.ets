@@ -36,6 +36,7 @@ export const log = (info: string) => {
 interface AssertErrorOption {
   statusCode?: number;
   code?: string;
+  message?: string;
   callback?: (e: Error) => void
 }
 
@@ -52,6 +53,11 @@ export const assertError = async (fn: Function, option?: AssertErrorOption) => {
     if (option?.code !== undefined) {
       expect(e.Code).assertEqual(option.code);
     }
+
+    if (option?.message) {
+      expect(e.message).assertEqual(option.message)
+    }
+
     option?.callback?.(e);
     return;
   }
@@ -78,6 +84,33 @@ export const writeFile = async  () =>{
     })
     written += chunkSize;
     lastContent = content;
+  }
+
+  await writableStream.close();
+  return path;
+}
+
+export const writeFile2 = async  (path: string, size: number) =>{
+  const writableStream = fs.createStreamSync(path, "w+");
+  const chunkSize = 1024; // 每次写入1KB数据
+  let written = 0;
+  log('write ===> ' + size)
+
+  let ok = true;
+  while (written < size && ok) {
+    let str = 'a';
+    if (written >= 20 * 1024 * 1024 && written < 40 * 1024 * 1024) {
+      log('b====>' + written)
+      str = 'b'
+    } else if (written >= 40 * 1024 * 1024){
+      str = 'c'
+    }
+    const content = str.repeat(chunkSize); //
+    // 写入数据
+    await writableStream.write(content, {
+      offset: written
+    })
+    written += chunkSize;
   }
 
   await writableStream.close();
