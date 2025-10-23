@@ -89,9 +89,21 @@ import {
   UploadPartCopyInput,
   Reader,
   GetObjectOutput,
+  UploadFileInput,
+  UploadFileOutput,
+  UploadedPart,
+  UploadEvent,
+  UploadPartInfo,
+  DownloadFileInput
 } from './types/model2'
+import { CheckpointRecord, CheckpointRecordPart,
+  DownloadFileCheckpointRecord,
+  DownloadFileCheckpointRecordPartInfo,
+  DownloadFileCheckpointRichInfo,
+  InnerGetObjectOutput,
+  Task } from './types/inner'
 import TosClientError from './TosClientError';
-import { Headers, Part, PartBody, Query, Response } from './types/common';
+import { Any, Headers, Part, PartBody, Query, Response } from './types/common';
 import { ListBucketsRequestHeaders } from './types/headers';
 import {
   getDateTimeStr,
@@ -112,12 +124,20 @@ import {
   withGetObjectOutput,
   schemeHost,
   encodeContentDisposition,
-  normalizeHeadersKey
+  normalizeHeadersKey,
+  getSize
 } from './utils/common'
-import { AzRedundancyType, StorageClassType, VersioningStatusType } from './types/enum';
+import { AzRedundancyType, StorageClassType, VersioningStatusType, UploadEventType } from './types/enum';
 import { ISigV4Credentials, SignersV4 } from './signatureV4';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { rcp } from '@kit.RemoteCommunicationKit'
+import { calculateSafePartSize, getAllTasks, getDirName, isDirectory, parseCheckpointRecord } from './utils/uploadFile';
+import TosServerError from './TosServerError';
+import { DataTransferType } from './types/DataTransferListener';
+import { buffer } from '@kit.ArkTS';
+import { CancelError } from './cancel';
+
+export const DEFAULT_PART_SIZE = 20 * 1024 * 1024; // 20 MB
 
 export class TosClient extends TOSBase {
   private DefaultListMaxKeys = 1000;
@@ -140,23 +160,6 @@ export class TosClient extends TOSBase {
     return output;
   }
   createBucket = async (input: CreateBucketInput): Promise<CreateBucketOutput> => {
-    const bucketName = input.Bucket;
-    if (bucketName.length < 3 || bucketName.length > 63) {
-      throw new TosClientError(
-        'invalid bucket name, the length must be [3, 63]'
-      );
-    }
-    if (!/^([a-z]|-|\d)+$/.test(bucketName)) {
-      throw new TosClientError(
-        'invalid bucket name, the character set is illegal'
-      );
-    }
-    if (/^-/.test(bucketName) || /-$/.test(bucketName)) {
-      throw new TosClientError(
-        `invalid bucket name, the bucket name can be neither starting with '-' nor ending with '-'`
-      );
-    }
-
     const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'x-tos-acl', input.ACL);
     writeHeaders(headers, 'x-tos-storage-class', input.StorageClass);
@@ -319,6 +322,9 @@ export class TosClient extends TOSBase {
     writeHeaders(headers,'x-tos-server-side-encryption-customer-key-md5', input.SSECKeyMD5);
     writeMeta(headers, input.Meta)
     const getContent = () => {
+      if (input.Content instanceof ArrayBuffer && input.Content.byteLength === 0) {
+        return;
+      }
       return input.Content;
     }
 
@@ -327,7 +333,7 @@ export class TosClient extends TOSBase {
       bucket: input.Bucket,
       key: input.Key
     }, 'PUT', {}, headers, newContent, {
-      isStreamReq: newContent instanceof rcp.UploadFromStream,
+      isStreamReq: newContent instanceof rcp.UploadFromStream || newContent instanceof rcp.UploadFromFile,
     })
     const output = {
       HashCrc64ecma: res.headers['x-tos-hash-crc64ecma']
@@ -344,6 +350,289 @@ export class TosClient extends TOSBase {
     input2.Content = uploadFromStream;
     return this.putObject(input2)
   }
+
+  uploadFile = async (input: UploadFileInput): Promise<UploadFileOutput> => {
+    const fileStat = await fs.stat(input.FilePath);
+    const fileSize = fileStat.size;
+    const checkpointRichInfo = await parseCheckpointRecord<CheckpointRecord>({
+      EnableCheckpoint: input.EnableCheckpoint,
+      CheckpointFile: input.CheckpointFile,
+      Bucket: input.Bucket,
+      Key: input.Key,
+      FilePath: input.FilePath
+    })
+
+    if (checkpointRichInfo.record?.file_info) {
+      // last modified
+      if (checkpointRichInfo.record?.file_info.file_size !== fileSize) {
+        checkpointRichInfo.record = undefined;
+      }
+      const lastModified = checkpointRichInfo.record?.file_info.last_modified;
+      if (lastModified && lastModified !== fileStat.mtime) {
+        checkpointRichInfo.record = undefined;
+      }
+    }
+
+    const partSize = calculateSafePartSize(
+      fileSize,
+      input.PartSize || checkpointRichInfo.record?.part_size || DEFAULT_PART_SIZE,
+      true
+    );
+
+    if (checkpointRichInfo.record) {
+      const cpRecord = checkpointRichInfo.record;
+      if (cpRecord.bucket !== input.Bucket || cpRecord.key !== input.Key || cpRecord.part_size !== partSize) {
+        checkpointRichInfo.record = undefined;
+      }
+    }
+
+    const initConsumedBytes = (checkpointRichInfo.record?.parts_info || [])
+      .filter((it) => it.is_completed)
+      .reduce((prev, it) => prev + it.part_size, 0);
+
+    const allTasks = getAllTasks(fileSize, partSize);
+    let tasks: Task[]
+    const recordedTasks = checkpointRichInfo.record?.parts_info || [];
+    const recordedTaskMap: Map<number, CheckpointRecordPart> = new Map();
+    recordedTasks.forEach((it) => recordedTaskMap.set(it.part_number, it));
+    let uploadId = '';
+    const triggerUploadEvent = (type: UploadEventType, uploadPartInfo?: UploadPartInfo, err?: Error) => {
+      if (!input.UploadEventListener) {
+        return;
+      }
+
+      const event: UploadEvent = {
+        Type: type,
+        Err: err,
+        Bucket: input.Bucket,
+        Key: input.Key,
+        FilePath: input.FilePath,
+        UploadID: uploadId,
+        CheckpointFile: checkpointRichInfo.filePath,
+        UploadPartInfo: uploadPartInfo,
+      };
+
+      input.UploadEventListener.EventChange(event);
+    }
+
+    let consumedBytes = initConsumedBytes;
+    const triggerDataTransfer = (
+      type: DataTransferType,
+      rwOnceBytes: number = 0
+    ) => {
+      if (!input.DataTransferListener) {
+        return;
+      }
+      consumedBytes += rwOnceBytes;
+
+      input.DataTransferListener.DataTransferStatusChange({
+        Type:type,
+        RWOnceBytes: rwOnceBytes,
+        ConsumedBytes: consumedBytes,
+        TotalBytes: fileSize,
+      });
+    };
+
+    const rmCheckpointFile = async () => {
+      try {
+        await fs.unlink(checkpointRichInfo.filePath)
+      } catch (e) {
+        console.log('remove checkpoint file failure, you can remove it by hand.\n',
+          `checkpoint file path: ${checkpointRichInfo.filePath}\n`,
+          e.message
+        );
+      }
+    }
+
+    const cancel = async () => {
+      if (input.CancelHook?.isCanceled) {
+        if (input.CancelHook.isAbort) {
+          await rmCheckpointFile();
+        }
+        throw new CancelError('cancel uploadFile')
+      }
+    }
+
+    if (checkpointRichInfo.record) {
+      uploadId = checkpointRichInfo.record.upload_id;
+      const uploadedPartSet: Set<number> = new Set(
+        (checkpointRichInfo.record.parts_info || [])
+          .filter((it) => it.is_completed)
+          .map((it) => it.part_number)
+      );
+      tasks = allTasks.filter((it) => !uploadedPartSet.has(it.partNumber));
+    } else  {
+      tasks = allTasks;
+      try {
+        const createMultipartUploadRes = await this.createMultipartUpload(input);
+        await cancel();
+        uploadId = createMultipartUploadRes.UploadId;
+        triggerUploadEvent(UploadEventType.CreateMultipartUploadSucceed);
+      } catch (e) {
+        triggerUploadEvent(UploadEventType.CreateMultipartUploadFailed, undefined, e);
+        throw e as Error
+      }
+    }
+
+    const getCheckpointContent = () => {
+      const checkpointContent: CheckpointRecord = {
+        bucket: input.Bucket,
+        key: input.Key,
+        part_size: partSize,
+        upload_id: uploadId,
+        parts_info: recordedTasks,
+        file_info: {
+          last_modified: fileStat.mtime,
+          file_size: fileStat.size,
+        }
+      };
+      return checkpointContent;
+    };
+
+    const writeCheckpointFile = async () => {
+      try {
+        const content = JSON.stringify(getCheckpointContent(), null, 2);
+        if (checkpointRichInfo.filePath) {
+          const dirName = getDirName(checkpointRichInfo.filePath);
+          try {
+            await fs.mkdir(dirName, true)
+          } catch (e) {}
+          const file = await fs.open(checkpointRichInfo.filePath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY)
+          await fs.write(file.fd, content);
+          await fs.close(file);
+        }
+      } catch (e) {
+        console.log('write checkpoint file failure', e.message)
+      }
+    }
+
+    const updateAfterUploadPart = async (task: Task, uploadPartRes: UploadPartOutput | null, err: Error | null) => {
+      let existRecordTask = recordedTaskMap.get(task.partNumber);
+      if (!existRecordTask) {
+        existRecordTask = {
+          part_number: task.partNumber,
+          offset: task.offset,
+          part_size: task.partSize,
+          is_completed: false,
+          etag: '',
+          hash_crc64ecma: '',
+        };
+        recordedTasks.push(existRecordTask);
+        recordedTaskMap.set(existRecordTask.part_number, existRecordTask);
+      }
+
+      if (!err) {
+        existRecordTask.is_completed = true;
+        existRecordTask.etag = uploadPartRes?.ETag || ''
+        existRecordTask.hash_crc64ecma = uploadPartRes?.HashCrc64ecma || '';
+      }
+
+      await writeCheckpointFile();
+      const uploadPartInfo: UploadPartInfo = {
+        PartNumber: existRecordTask.part_number,
+        PartSize: existRecordTask.part_size,
+        Offset: existRecordTask.offset,
+        ETag: existRecordTask.etag || '',
+        HashCrc64ecma: existRecordTask.hash_crc64ecma || ''
+      };
+
+      if (!err) {
+        triggerUploadEvent(UploadEventType.UploadPartSucceed, uploadPartInfo)
+      } else {
+        triggerUploadEvent(UploadEventType.UploadPartFailed, uploadPartInfo, err);
+        if (err instanceof TosServerError &&  [403, 404, 405].includes(err.StatusCode)) {
+          triggerUploadEvent(UploadEventType.UploadPartAborted, uploadPartInfo, err as Error);
+        }
+      }
+    }
+
+    const handleTasks = async () => {
+      let firstErr: Error | null = null;
+      let index = 0;
+
+      await Promise.all(new Array(input.TaskNum || 1).fill(0).map(async () => {
+        while (true) {
+          const currentIndex = index++;
+          if (currentIndex >= tasks.length) {
+            return;
+          }
+          const curTask = tasks[currentIndex];
+          let consumedBytesThisTask = 0;
+          try {
+            const arrayBuffer = new ArrayBuffer(curTask.partSize);
+            const file = await fs.open(input.FilePath);
+            await fs.read(file.fd, arrayBuffer, {
+              offset: curTask.offset,
+              length: curTask.partSize
+            });
+            await fs.close(file);
+            const uploadPartRes = await this.uploadPart({
+              Bucket: input.Bucket,
+              Key: input.Key,
+              UploadID: uploadId,
+              PartNumber: curTask.partNumber,
+              Content: arrayBuffer,
+              SSECAlgorithm: input.SSECAlgorithm,
+              SSECKey: input.SSECKey,
+              SSECKeyMD5: input.SSECKeyMD5,
+              DataTransferListener: {
+                DataTransferStatusChange(status){
+                  if (status.Type !== DataTransferType.RW) {
+                    return;
+                  }
+                  consumedBytesThisTask += status.RWOnceBytes;
+                  triggerDataTransfer(status.Type, status.RWOnceBytes);
+                }
+              }
+            })
+            await cancel();
+            await updateAfterUploadPart(curTask, uploadPartRes, null);
+          } catch (e) {
+            if (!firstErr) {
+              firstErr = e;
+            }
+            await cancel();
+            consumedBytes -= consumedBytesThisTask;
+            consumedBytesThisTask = 0;
+            await updateAfterUploadPart(curTask, null, e);
+          }
+        }
+      }))
+
+      if (firstErr) {
+        throw firstErr as Error
+      }
+
+      const parts = (getCheckpointContent().parts_info || []).map((it) => {
+        return new UploadedPart(it.part_number, it.etag);
+      });
+      try {
+        const res = await this.completeMultipartUpload({
+          Bucket: input.Bucket,
+          Key: input.Key,
+          UploadID: uploadId,
+          Parts: parts
+        })
+        triggerUploadEvent(UploadEventType.CompleteMultipartUploadSucceed);
+        return res;
+      } catch (e) {
+        triggerUploadEvent(UploadEventType.CompleteMultipartUploadFailed, undefined, e);
+        throw e as Error;
+      }
+    }
+
+    try {
+      triggerDataTransfer(DataTransferType.Started);
+      const res = await handleTasks();
+      triggerDataTransfer(DataTransferType.Succeed);
+      await rmCheckpointFile();
+      return res;
+    } catch (e) {
+      triggerDataTransfer(DataTransferType.Failed);
+      throw e as Error
+    }
+  }
+
   private getCopySourceHeader = (srcBucket: string, srcKey: string) => {
     return `/${srcBucket}/${encodeURIComponent(srcKey)}`;
   }
@@ -421,6 +710,26 @@ export class TosClient extends TOSBase {
     })
     return withGetObjectOutput(res);
   }
+
+  // _getObject = async (input: GetObjectInput) => {
+  //   const query: Query = {};
+  //   writeQuery(query, 'versionId', input.VersionId)
+  //   const headers = makeGetObjectHeaders(input);
+  //   const buf = buffer.alloc(0);
+  //
+  //   const res = await this._fetchObject({
+  //     bucket: input.Bucket,
+  //     key: input.Key
+  //   }, 'GET', query, headers, undefined, {
+  //     onDataReceive: (data) => {
+  //       console.log('_getObject ===> ', data.byteLength)
+  //
+  //     }
+  //   })
+  //   const output = withGetObjectOutput(res);
+  //   const output2 = output as Any as InnerGetObjectOutput;
+  //   return output2
+  // }
   // getObjectToFile = async (input: GetObjectToFileInput): Promise<GetObjectToFileOutput> => {
   //   const query: Query = {};
   //   writeQuery(query, 'versionId', input.VersionId)
@@ -433,6 +742,239 @@ export class TosClient extends TOSBase {
   //   })
   //   return withGetObjectOutput(res);
   // }
+  downloadFile = async (input: DownloadFileInput) => {
+    const headObjectRes = await this.headObject(input);
+    const objectSize = headObjectRes.ContentLength;
+    const checkpointRichInfo = await parseCheckpointRecord<DownloadFileCheckpointRecord>({
+      EnableCheckpoint: input.EnableCheckpoint,
+      CheckpointFile: input.CheckpointFile,
+      Bucket: input.Bucket,
+      Key: input.Key,
+      FilePath: input.FilePath
+    })
+
+    if (checkpointRichInfo.record?.object_info) {
+      const object_info = checkpointRichInfo.record?.object_info
+      if (objectSize !== object_info.object_size) {
+        checkpointRichInfo.record = undefined;
+      }
+
+      const last_modified = object_info.last_modified;
+      if (last_modified && last_modified !== headObjectRes.Headers['last-modified']) {
+        checkpointRichInfo.record = undefined;
+      }
+    }
+
+    const partSize = input.PartSize || checkpointRichInfo.record?.part_size || DEFAULT_PART_SIZE;
+    if (checkpointRichInfo.record && checkpointRichInfo.record.part_size !== partSize) {
+      checkpointRichInfo.record = undefined;
+    }
+
+    let filePath = input.FilePath;
+    if (await isDirectory(input.FilePath)){
+      const split = input.FilePath.endsWith('/') ? '' : '/';
+      filePath = input.FilePath + split + input.Key
+    }
+    const dirName = getDirName(filePath);
+    try {
+      await fs.mkdir(dirName, true);
+    } catch (e) {}
+    const file = await fs.open(filePath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY)
+
+    let tasks: Task[] = [];
+    const allTasks: Task[] = getAllTasks(objectSize, partSize);
+    const initConsumedBytes = (checkpointRichInfo.record?.parts_info || [])
+      .filter((it) => it.is_completed)
+      .reduce((prev, it) => prev + (it.range_end - it.range_start + 1), 0);
+    const recordedTasks = checkpointRichInfo.record?.parts_info || [];
+    const recordedTaskMap: Map<number, DownloadFileCheckpointRecordPartInfo> =
+      new Map();
+    recordedTasks.forEach((it) => recordedTaskMap.set(it.part_number, it));
+
+    if (checkpointRichInfo.record) {
+      const uploadedPartSet: Set<number> = new Set(
+        (checkpointRichInfo.record.parts_info || [])
+          .filter((it) => it.is_completed)
+          .map((it) => it.part_number)
+      );
+      tasks = allTasks.filter((it) => !uploadedPartSet.has(it.partNumber));
+    } else {
+      tasks = allTasks;
+    }
+
+    const getCheckpointContent = () => {
+      const checkpointContent: DownloadFileCheckpointRecord = {
+        bucket: input.Bucket,
+        key: input.Key,
+        version_id: input.VersionID,
+        part_size: partSize,
+        parts_info: recordedTasks,
+        file_info: {
+          file_path: filePath,
+        },
+        object_info: {
+          last_modified: headObjectRes.Headers['last-modified'] || '',
+          etag: headObjectRes.ETag,
+          hash_crc64ecma: headObjectRes.HashCrc64ecma || '',
+          object_size: objectSize,
+        },
+      };
+      return checkpointContent;
+    };
+
+    let consumedBytes = initConsumedBytes;
+    const triggerDataTransfer = (
+      type: DataTransferType,
+      rwOnceBytes: number = 0
+    ) => {
+      if (!input.DataTransferListener) {
+        return;
+      }
+      consumedBytes += rwOnceBytes;
+
+      input.DataTransferListener.DataTransferStatusChange({
+        Type: type,
+        RWOnceBytes: rwOnceBytes,
+        ConsumedBytes: consumedBytes,
+        TotalBytes: objectSize,
+      });
+    };
+
+    const writeCheckpointFile = async () => {
+      try {
+        const content = JSON.stringify(getCheckpointContent(), null, 2);
+        if (checkpointRichInfo.filePath) {
+          const dirName = getDirName(checkpointRichInfo.filePath);
+          try {
+            await fs.mkdir(dirName, true)
+          } catch (e) {}
+          const file = await fs.open(checkpointRichInfo.filePath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY)
+          await fs.write(file.fd, content);
+          await fs.close(file);
+        }
+      } catch (e) {
+        console.log('write checkpoint file failure', e.message)
+      }
+    }
+
+    const rmCheckpointFile = async () => {
+      try {
+        await fs.unlink(checkpointRichInfo.filePath)
+      } catch (e) {
+        console.log('remove checkpoint file failure, you can remove it by hand.\n',
+          `checkpoint file path: ${checkpointRichInfo.filePath}\n`,
+          e.message
+        );
+      }
+    }
+
+    const cancel = async () => {
+      if (input.CancelHook?.isCanceled) {
+        if (input.CancelHook.isAbort) {
+          await rmCheckpointFile();
+        }
+        throw new CancelError('cancel downloadFile')
+      }
+    }
+
+    const updateAfterDownloadPart = async (task: Task, getObjectRes?: GetObjectOutput, err?: Error) => {
+      let existRecordTask = recordedTaskMap.get(task.partNumber);
+      const rangeStart = task.offset;
+      const rangeEnd = Math.min(task.offset + partSize - 1, objectSize - 1);
+      if (!existRecordTask) {
+        existRecordTask = {
+          part_number: task.partNumber,
+          range_start: rangeStart,
+          range_end: rangeEnd,
+          hash_crc64ecma: '',
+          is_completed: false,
+        };
+        recordedTasks.push(existRecordTask);
+        recordedTaskMap.set(existRecordTask.part_number, existRecordTask);
+      }
+
+      if (!err) {
+        existRecordTask.is_completed = true;
+      }
+      await writeCheckpointFile();
+    }
+
+    const handleTasks = async () => {
+      let firstErr: Error | null = null;
+      let index = 0;
+      await Promise.all(new Array(input.TaskNum || 1).fill(0).map(async () => {
+        while (true) {
+          const currentIndex = index++;
+          if (currentIndex >= tasks.length) {
+            return;
+          }
+          const curTask = tasks[currentIndex];
+          try {
+            const query: Query = {};
+            writeQuery(query, 'versionId', input.VersionID)
+            const headers = makeGetObjectHeaders({
+              Bucket: input.Bucket,
+              Key: input.Key,
+              VersionId: input.VersionID,
+              IfMatch: input.IfMatch,
+              IfModifiedSince: input.IfModifiedSince,
+              IfNoneMatch: input.IfNoneMatch,
+              IfUnmodifiedSince: input.IfUnmodifiedSince,
+              SSECAlgorithm: input.SSECAlgorithm,
+              SSECKey: input.SSECKey,
+              SSECKeyMD5: input.SSECKeyMD5,
+              Range: `bytes=${curTask.offset}-${Math.min(
+                curTask.offset + curTask.partSize - 1,
+                objectSize - 1
+              )}`
+            });
+            let offset = curTask.offset;
+            const res = await this._fetchObject({
+              bucket: input.Bucket,
+              key: input.Key
+            }, 'GET', query, headers, undefined, {
+              onDataReceive: async  (data) => {
+                triggerDataTransfer(DataTransferType.RW, data.byteLength)
+                await cancel();
+                await fs.write(file.fd, data, {
+                  offset,
+                })
+                offset += data.byteLength
+              }
+            })
+            await cancel();
+            await updateAfterDownloadPart(curTask, withGetObjectOutput(res))
+          } catch (e) {
+            if (!firstErr) {
+              firstErr = e as Error
+            }
+            await cancel();
+            await updateAfterDownloadPart(curTask, undefined, e);
+          }
+        }
+      }))
+
+      if (firstErr) {
+        throw firstErr as Error
+      }
+    }
+
+    triggerDataTransfer(DataTransferType.Started);
+    try {
+      if (objectSize > 0) {
+        await handleTasks();
+      }
+      triggerDataTransfer(DataTransferType.Succeed);
+      await rmCheckpointFile();
+      return headObjectRes;
+    } catch (e) {
+      triggerDataTransfer(DataTransferType.Failed);
+      throw e as Error
+    } finally {
+      await fs.close(file.fd);
+    }
+  }
+
   deleteObject = async (input: DeleteObjectInput): Promise<DeleteObjectOutput> => {
     const query: Query = {}
     if (input.VersionID) {
@@ -489,10 +1031,19 @@ export class TosClient extends TOSBase {
     const query: Query = {};
     query.append = '';
     writeQuery(query, 'offset', input.Offset)
+    const getContent = () => {
+      if (input.Content instanceof ArrayBuffer && input.Content.byteLength === 0) {
+        return;
+      }
+      return input.Content;
+    }
+
+    const newContent = getContent();
+
     const res = await this._fetchObject({
       bucket: input.Bucket,
       key: input.Key
-    }, 'POST', query, headers, input.Content, {
+    }, 'POST', query, headers, newContent, {
       isStreamReq: input.Content instanceof rcp.UploadFromStream
     })
     const output = {} as AppendObjectOutput;
@@ -1014,22 +1565,65 @@ export class TosClient extends TOSBase {
     writeHeaders(headers, 'x-tos-server-side-encryption-customer-algorithm', input.SSECAlgorithm);
     writeHeaders(headers, 'x-tos-server-side-encryption-customer-key', input.SSECKey);
     writeHeaders(headers, 'x-tos-server-side-encryption-customer-key-md5', input.SSECKeyMD5);
-    const res = await this._fetchObject({
-      bucket: input.Bucket,
-      key: input.Key
-    }, 'PUT', {
-      partNumber: input.PartNumber,
-      uploadId: input.UploadID
-    }, headers, input.Content, {
-      isStreamReq: input.Content instanceof rcp.UploadFromStream
-    })
-    const output = {
-      HashCrc64ecma: res.headers['x-tos-hash-crc64ecma']
-    } as UploadPartOutput;
-    output.ETag = res.headers.etag ?? "";
-    output.PartNumber = input.PartNumber;
-    withRequestInfo(output, res);
-    return output
+    const totalSize = getSize(input.Content, headers);
+    let consumedBytes = 0;
+    const triggerDataTransfer = (
+      type: DataTransferType,
+      rwOnceBytes: number = 0
+    ) => {
+      if (totalSize === null) {
+        return;
+      }
+      if (!input.DataTransferListener) {
+        return;
+      }
+      consumedBytes += rwOnceBytes;
+
+      input.DataTransferListener.DataTransferStatusChange({
+        Type: type,
+        RWOnceBytes: rwOnceBytes,
+        ConsumedBytes: consumedBytes,
+        TotalBytes: totalSize,
+      });
+    };
+    triggerDataTransfer(DataTransferType.Started);
+
+    const getContent = () => {
+      if (input.Content instanceof ArrayBuffer && input.Content.byteLength === 0) {
+        return;
+      }
+      return input.Content;
+    }
+
+    const newContent = getContent();
+
+    try {
+      const res = await this._fetchObject({
+        bucket: input.Bucket,
+        key: input.Key
+      }, 'PUT', {
+        partNumber: input.PartNumber,
+        uploadId: input.UploadID
+      }, headers, newContent, {
+        isStreamReq: input.Content instanceof rcp.UploadFromStream,
+        useCustomHttp: true,
+        onProgress(size){
+          triggerDataTransfer(DataTransferType.RW, size - consumedBytes)
+        }
+      })
+      const output = {
+        HashCrc64ecma: res.headers['x-tos-hash-crc64ecma']
+      } as UploadPartOutput;
+      output.ETag = res.headers.etag ?? "";
+      output.PartNumber = input.PartNumber;
+      withRequestInfo(output, res);
+      triggerDataTransfer(DataTransferType.Succeed);
+      return output
+    } catch (e) {
+      triggerDataTransfer(DataTransferType.Failed);
+      throw e as Error
+    }
+
   }
   uploadPartCopy = async (input: UploadPartCopyInput): Promise<UploadPartCopyOutput> => {
     const headers = normalizeHeadersKey(input.RequestHeader) ?? {};

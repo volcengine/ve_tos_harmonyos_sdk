@@ -26,6 +26,10 @@ import streamTest from './stream.test'
 import httpSchemeTest from './httpScheme.test'
 import encodeTest from './encode.test'
 import parts2Test from './parts2.test'
+import uploadFileTest from './uploadFile.test'
+import uploadFileTest2 from './uploadFile2.test'
+import demoTest from './demo.test';
+import validateBucketNameTest from './validateBucket.test'
 
 export default function testsuite() {
   bucketTest()
@@ -51,4 +55,8 @@ export default function testsuite() {
   httpSchemeTest();
   encodeTest();
   parts2Test();
+  uploadFileTest();
+  demoTest();
+  uploadFileTest2();
+  validateBucketNameTest()
 }
