@@ -36,6 +36,7 @@ export const log = (info: string) => {
 interface AssertErrorOption {
   statusCode?: number;
   code?: string;
+  message?: string;
   callback?: (e: Error) => void
 }
 
@@ -52,6 +53,11 @@ export const assertError = async (fn: Function, option?: AssertErrorOption) => {
     if (option?.code !== undefined) {
       expect(e.Code).assertEqual(option.code);
     }
+
+    if (option?.message) {
+      expect(e.message).assertEqual(option.message)
+    }
+
     option?.callback?.(e);
     return;
   }
