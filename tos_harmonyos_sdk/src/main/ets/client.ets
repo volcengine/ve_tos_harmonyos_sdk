@@ -160,23 +160,6 @@ export class TosClient extends TOSBase {
     return output;
   }
   createBucket = async (input: CreateBucketInput): Promise<CreateBucketOutput> => {
-    const bucketName = input.Bucket;
-    if (bucketName.length < 3 || bucketName.length > 63) {
-      throw new TosClientError(
-        'invalid bucket name, the length must be [3, 63]'
-      );
-    }
-    if (!/^([a-z]|-|\d)+$/.test(bucketName)) {
-      throw new TosClientError(
-        'invalid bucket name, the character set is illegal'
-      );
-    }
-    if (/^-/.test(bucketName) || /-$/.test(bucketName)) {
-      throw new TosClientError(
-        `invalid bucket name, the bucket name can be neither starting with '-' nor ending with '-'`
-      );
-    }
-
     const headers: Headers = normalizeHeadersKey(input.RequestHeader) ?? {};
     writeHeaders(headers, 'x-tos-acl', input.ACL);
     writeHeaders(headers, 'x-tos-storage-class', input.StorageClass);

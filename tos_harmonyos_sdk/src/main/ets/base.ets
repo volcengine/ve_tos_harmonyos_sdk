@@ -8,7 +8,7 @@ import { rcp } from '@kit.RemoteCommunicationKit';
 import { makeAxiosInst } from './axios';
 import { Headers, Query, Method, Response, Any } from './types/common'
 import { ISigV4Credentials, SignersV4 } from './signatureV4';
-import { getEndpoint, getSortedQueryString, schemeHost } from './utils/common';
+import { getEndpoint, getSortedQueryString, schemeHost, validateBucketName } from './utils/common';
 import { hashMd5, stringify } from './crypto';
 import { buffer, stream } from '@kit.ArkTS';
 import { TosServerErrorData } from './TosServerError';
@@ -351,6 +351,8 @@ export class TOSBase {
       throw Error('Must provide bucket param');
     }
 
+    validateBucketName(bucket)
+
     const newOpts: FetchOpts = opts ? opts : {};
     newOpts.subdomainBucket = bucket;
 
@@ -370,6 +372,8 @@ export class TOSBase {
     if (!bucket) {
       throw new TosClientError('Must provide bucket param');
     }
+
+    validateBucketName(bucket)
 
     const newOpts: FetchOpts = opts ? opts : {};
     newOpts.subdomainBucket = bucket;

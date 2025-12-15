@@ -227,6 +227,10 @@ export class SignersV4 {
       port: opt.port,
     });
 
+    if (this.options.securityToken) {
+      res[SIG_QUERY.v4_security_token] = this.options.securityToken;
+    }
+
     const newOpt: ISigOptions = {
       sigName: opt.sigName,
       endpoints:opt.endpoints,
@@ -241,10 +245,6 @@ export class SignersV4 {
       datetime: opt.datetime,
       host: opt.host,
       port: opt.port,
-    }
-
-    if (this.options.securityToken) {
-      res[SIG_QUERY.v4_security_token] = this.options.securityToken;
     }
 
     res[SIG_QUERY.v4_signature] = this.authorization(

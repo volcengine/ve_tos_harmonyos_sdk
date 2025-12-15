@@ -5,3 +5,6 @@
 - first version
 # 2.1.0
 - add uploadFile and downloadFile apis
+# 2.1.1
+- fix preSignedURL
+- add bucket validate

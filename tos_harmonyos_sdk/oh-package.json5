@@ -1,6 +1,6 @@
 {
   "name": "@volcengine/tos_harmonyos_sdk",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "TOS SDK for ArkTS",
   "main": "Index.ets",
   "author": "volc-tos",

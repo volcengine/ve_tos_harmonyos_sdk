@@ -400,3 +400,21 @@ export const getSize = (body: SupportObjectBody, headers?: Headers): number | nu
 
   return null;
 }
+
+export const validateBucketName = (bucketName:  string) => {
+  if (bucketName.length < 3 || bucketName.length > 63) {
+    throw new TosClientError(
+      'invalid bucket name, the length must be [3, 63]'
+    );
+  }
+  if (!/^([a-z]|-|\d)+$/.test(bucketName)) {
+    throw new TosClientError(
+      'invalid bucket name, the character set is illegal'
+    );
+  }
+  if (/^-/.test(bucketName) || /-$/.test(bucketName)) {
+    throw new TosClientError(
+      `invalid bucket name, the bucket name can be neither starting with '-' nor ending with '-'`
+    );
+  }
+}
